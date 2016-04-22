@@ -1,7 +1,7 @@
 from distutils.core import setup
 setup(
     name = 'python-db',
-    packages = ['python-db'],
+    packages = ['pydb'],
     version = "0.0.0",
     description = 'Placeholder description',
     author = "Jason Trigg",
