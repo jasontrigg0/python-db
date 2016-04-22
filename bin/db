@@ -1,0 +1,4 @@
+#!/usr/bin/env python
+import pydb.db
+
+pydb.db.main()
