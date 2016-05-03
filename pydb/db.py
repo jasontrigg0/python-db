@@ -65,34 +65,53 @@ def run(sql, df=False):
     db = MySQLdb_Engine().connection
     cursor = db.cursor()
     cursor.execute(sql)
-    field_names = [i[0] for i in cursor.description]
-    rows = [field_names] + list(cursor.fetchall())
-    rows = [[str(i) for i in r] for r in rows]
-    csv = pcsv.any2csv.rows2csv(rows)
-    if df:
-        return pcsv.any2csv.csv2df(csv)
-    else:
-        return csv
+    db.commit()
+    if cursor.description:
+        field_names = [i[0] for i in cursor.description]
+        rows = [field_names] + list(cursor.fetchall())
+        rows = [[process_field(i) for i in r] for r in rows]
+        csv = pcsv.any2csv.rows2csv(rows)
+        if df:
+            return pcsv.any2csv.csv2df(csv)
+        else:
+            return csv
 
+def process_field(f):
+    if f is None:
+        return "NULL"
+    else:
+        return str(f)
+    
 def readCL():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i","--index",action="store_true",help="show indexes on a table")
     parser.add_argument("-d","--describe",action="store_true",help="describe table")
-    parser.add_argument("-t","--table",help="can be table for table abbreviation such as pv for product_variations, pfi for product_family_ids, etc")
     parser.add_argument("--cat",action="store_true")
     parser.add_argument("--head",action="store_true")
     parser.add_argument("--tail",action="store_true")
     parser.add_argument("-r","--raw",action="store_true",help="print raw csv instead of pretty printing")
     parser.add_argument("-a","--show_all",action="store_true",help="print entire fields regardless of width")
-    parser.add_argument("positional")
+    parser.add_argument("--top",action="store_true",help="show currently running processes")
+    parser.add_argument("-k","--kill")
+    parser.add_argument("positional",nargs="?")
     args = parser.parse_args()
-    return args.index, args.describe, args.cat, args.head, args.tail, args.show_all, args.raw, args.positional
+    if args.top:
+        args.show_all = True
+    return args.index, args.describe, args.cat, args.head, args.tail, args.show_all, args.top, args.kill, args.raw, args.positional
 
 def main():
-    index, describe, cat, head, tail, show_all, raw, pos = readCL()
+    index, describe, cat, head, tail, show_all, top, kill, raw, pos = readCL()
     if any([index, describe, cat, head, tail]):
-        table = lookup_table_abbreviation(pos)
-    if index:
+        lookup = lookup_table_abbreviation(pos)
+        if lookup:
+            table = lookup
+        else:
+            table = pos
+    if kill:
+        out = run("KILL QUERY {kill}".format(**vars()))
+    elif top:
+        out = run("SHOW FULL PROCESSLIST")
+    elif index:
         out = run("SHOW INDEX FROM {table}".format(**vars()))
     elif describe:
         out = run("DESCRIBE {table}".format(**vars()))
