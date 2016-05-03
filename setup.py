@@ -8,7 +8,7 @@ setup(
     author_email = "jasontrigg0@gmail.com",
     url = "https://github.com/jasontrigg0/python-db",
     download_url = 'https://github.com/jasontrigg0/python-db/tarball/0.0.0',
-    scripts=[],
+    scripts=['bin/db'],
     install_requires=[],
     keywords = [],
     classifiers = [],
