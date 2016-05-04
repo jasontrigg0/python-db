@@ -12,16 +12,8 @@ import pydb.utils
 class MySQLdb_Engine():
     __metaclass__ = pydb.utils.Singleton
     def __init__(self):
-        if not "MYSQL_DB" in os.environ:
-            sys.stderr.write('ERROR: can\'t find MYSQL_DB variable! Set with \'export MYSQL_DB="my_db_name"\' or equivalent' + "\n")
-            sys.exit(-1)
-        if not "MYSQL_HOST" in os.environ:
-            sys.stderr.write('ERROR: can\'t find MYSQL_HOST variable! Set with \'export MYSQL_HOST="my_mysql_host"\' or equivalent' + "\n")
-            sys.exit(-1)
-        db = os.environ["MYSQL_DB"]
-        host = os.environ["MYSQL_HOST"]
-        user, passwd = self.read_config()
-        self.connection = MySQLdb.connect(host=host,user=user,passwd=passwd,db=db)
+        self.connection = self.connect()
+    @classmethod
     def read_config(self):
         mysql_config_file = get_home_directory() + "/.my.cnf"
         if not os.path.exists(mysql_config_file):
@@ -38,6 +30,19 @@ class MySQLdb_Engine():
             sys.stderr.write("ERROR: couldn't find user or password in mysql config file. Make sure lines for user=MYUSERNAME and password=MYPASSWORD both exist in the file" + "\n")
             sys.exit(-1)
         return user, passwd
+    @classmethod
+    def connect(self):
+        if not "MYSQL_DB" in os.environ:
+            sys.stderr.write('ERROR: can\'t find MYSQL_DB variable! Set with \'export MYSQL_DB="my_db_name"\' or equivalent' + "\n")
+            sys.exit(-1)
+        if not "MYSQL_HOST" in os.environ:
+            sys.stderr.write('ERROR: can\'t find MYSQL_HOST variable! Set with \'export MYSQL_HOST="my_mysql_host"\' or equivalent' + "\n")
+            sys.exit(-1)
+        db = os.environ["MYSQL_DB"]
+        host = os.environ["MYSQL_HOST"]
+        user, passwd = self.read_config()
+        return MySQLdb.connect(host=host,user=user,passwd=passwd,db=db)
+        
             
 def get_home_directory():
     from os.path import expanduser
@@ -64,7 +69,13 @@ def run(sql, df=False):
     """
     db = MySQLdb_Engine().connection
     cursor = db.cursor()
-    cursor.execute(sql)
+    pid = db.thread_id()
+    try:
+        cursor.execute(sql)
+    except (KeyboardInterrupt, SystemExit):
+        new_cursor = MySQLdb_Engine.connect().cursor() #old cursor/connection is unusable
+        new_cursor.execute('KILL QUERY ' + str(pid))
+        sys.exit()
     db.commit()
     if cursor.description:
         field_names = [i[0] for i in cursor.description]
