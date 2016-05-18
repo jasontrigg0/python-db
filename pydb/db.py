@@ -62,8 +62,11 @@ def lookup_table_abbreviation(abbrev):
         if abbrev == table_abbreviation:
             return table
     return None
-    
+
 def run(sql, df=False):
+    return run_list([sql], df=False)
+
+def run_list(sql_list, df=False):
     """
     run sql and return either df of results or a string
     """
@@ -71,7 +74,8 @@ def run(sql, df=False):
     cursor = db.cursor()
     pid = db.thread_id()
     try:
-        cursor.execute(sql)
+        for s in sql_list:
+            cursor.execute(s)
     except (KeyboardInterrupt, SystemExit):
         new_cursor = MySQLdb_Engine.connect().cursor() #old cursor/connection is unusable
         new_cursor.execute('KILL QUERY ' + str(pid))
@@ -103,21 +107,24 @@ def readCL():
     parser.add_argument("-r","--raw",action="store_true",help="print raw csv instead of pretty printing")
     parser.add_argument("-a","--show_all",action="store_true",help="print entire fields regardless of width")
     parser.add_argument("--top",action="store_true",help="show currently running processes")
+    parser.add_argument("-p","--profile",action="store_true",help="profile the given query")
     parser.add_argument("-k","--kill")
-    parser.add_argument("positional",nargs="?")
+    parser.add_argument("-t","--table", action="store_true", help="db -t table_name col1 col2... --> frequencies for col1,col2 in table_name")
+    parser.add_argument("-w","--where",action="store_true",help="db -w table_name col val --> 'SELECT * FROM table_name WHERE col = val'")
+    parser.add_argument("positional",nargs="*")
     args = parser.parse_args()
     if args.top:
         args.show_all = True
-    return args.index, args.describe, args.cat, args.head, args.tail, args.show_all, args.top, args.kill, args.raw, args.positional
+    return args.index, args.describe, args.cat, args.head, args.tail, args.show_all, args.top, args.kill, args.profile, args.where, args.table, args.raw, args.positional
 
 def main():
-    index, describe, cat, head, tail, show_all, top, kill, raw, pos = readCL()
-    if any([index, describe, cat, head, tail]):
-        lookup = lookup_table_abbreviation(pos)
+    index, describe, cat, head, tail, show_all, top, kill, profile, where, freq, raw, pos = readCL()
+    if any([index, describe, cat, head, tail, where, freq]):
+        lookup = lookup_table_abbreviation(pos[0])
         if lookup:
             table = lookup
         else:
-            table = pos
+            table = pos[0]
     if kill:
         out = run("KILL QUERY {kill}".format(**vars()))
     elif top:
@@ -135,8 +142,16 @@ def main():
         cnt = cnt.iloc[0,0]
         offset = int(cnt) - 10
         out = run("SELECT * FROM {table} LIMIT {offset},10".format(**vars()))
+    elif where:
+        out = run("SELECT * FROM {table} WHERE {pos[1]} = '{pos[2]}'".format(**vars()))
+    elif freq:
+        csv = ",".join(pos[1:])
+        out = run("SELECT {csv},count(*) FROM {table} GROUP BY {csv}".format(**vars()))
     else:
-        out = run(pos)
+        if profile:
+            out = run_list(['SET profiling = 1;'] + pos + ["SHOW PROFILE"])
+        else:
+            out = run_list(pos)
 
     if show_all:
         max_field_size = None
