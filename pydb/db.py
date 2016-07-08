@@ -64,7 +64,7 @@ def lookup_table_abbreviation(abbrev):
     return None
 
 def run(sql, df=False):
-    return run_list([sql], df=False)
+    return run_list([sql], df)
 
 def run_list(sql_list, df=False):
     """
