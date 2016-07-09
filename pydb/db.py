@@ -114,15 +114,16 @@ def readCL():
     parser.add_argument("-k","--kill")
     parser.add_argument("-t","--table", action="store_true", help="db -t table_name col1 col2... --> frequencies for col1,col2 in table_name")
     parser.add_argument("-w","--where",action="store_true",help="db -w table_name col val --> 'SELECT * FROM table_name WHERE col = val'")
+    parser.add_argument("--key",action="store_true", help="db --key table_name primary_key_value --> 'SELECT * FROM table_name WHERE primary_key = primary_key_value'")
     parser.add_argument("positional",nargs="*")
     args = parser.parse_args()
     if args.top:
         args.show_all = True
-    return args.index, args.describe, args.cat, args.head, args.tail, args.show_all, args.top, args.kill, args.profile, args.where, args.table, args.raw, args.positional
+    return args.index, args.describe, args.cat, args.head, args.tail, args.show_all, args.top, args.kill, args.profile, args.where, args.key, args.table, args.raw, args.positional
 
 def main():
-    index, describe, cat, head, tail, show_all, top, kill, profile, where, freq, raw, pos = readCL()
-    if any([index, describe, cat, head, tail, where, freq]):
+    index, describe, cat, head, tail, show_all, top, kill, profile, where, key, freq, raw, pos = readCL()
+    if any([index, describe, cat, head, tail, where, key, freq]):
         lookup = lookup_table_abbreviation(pos[0])
         if lookup:
             table = lookup
@@ -147,6 +148,10 @@ def main():
         out = run("SELECT * FROM {table} LIMIT {offset},10".format(**vars()))
     elif where:
         out = run("SELECT * FROM {table} WHERE {pos[1]} = %s".format(**vars()), params = (pos[2],))
+    elif key:
+        key = run("SHOW INDEX FROM {table} WHERE Key_name = 'PRIMARY'".format(**vars()), df=True)["Column_name"].values[0]
+        # function dbk() { col=$(db -r "SHOW INDEX FROM $1 WHERE Key_name = 'PRIMARY'" | pcsv -c 'Column_name' | pawk -g 'i==1'); db "SELECT * FROM $1 WHERE $col = $2"; }
+        out = run("SELECT * FROM {table} WHERE {key} = %s".format(**vars()), params = (pos[1],))
     elif freq:
         csv = ",".join(pos[1:])
         out = run("SELECT {csv},count(*) FROM {table} GROUP BY {csv}".format(**vars()))
