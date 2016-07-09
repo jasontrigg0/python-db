@@ -63,10 +63,10 @@ def lookup_table_abbreviation(abbrev):
             return table
     return None
 
-def run(sql, df=False):
-    return run_list([sql], df)
+def run(sql, df=False, params=None):
+    return run_list([sql], df, [params])
 
-def run_list(sql_list, df=False):
+def run_list(sql_list, df=False, params_list=None):
     """
     run sql and return either df of results or a string
     """
@@ -74,8 +74,11 @@ def run_list(sql_list, df=False):
     cursor = db.cursor()
     pid = db.thread_id()
     try:
-        for s in sql_list:
-            cursor.execute(s)
+        for i,s in enumerate(sql_list):
+            if params_list:
+                cursor.execute(s,params_list[i])
+            else:
+                cursor.execute(s)
     except (KeyboardInterrupt, SystemExit):
         new_cursor = MySQLdb_Engine.connect().cursor() #old cursor/connection is unusable
         new_cursor.execute('KILL QUERY ' + str(pid))
@@ -143,7 +146,7 @@ def main():
         offset = int(cnt) - 10
         out = run("SELECT * FROM {table} LIMIT {offset},10".format(**vars()))
     elif where:
-        out = run("SELECT * FROM {table} WHERE {pos[1]} = '{pos[2]}'".format(**vars()))
+        out = run("SELECT * FROM {table} WHERE {pos[1]} = %s".format(**vars()), params = (pos[2],))
     elif freq:
         csv = ",".join(pos[1:])
         out = run("SELECT {csv},count(*) FROM {table} GROUP BY {csv}".format(**vars()))
