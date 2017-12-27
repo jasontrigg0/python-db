@@ -1,11 +1,11 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 import MySQLdb
 import sys
 import argparse
 import os
 
+import jtutils
 import pcsv.any2csv
-import pcsv.utils
 
 import pydb.utils
 
@@ -42,8 +42,8 @@ class MySQLdb_Engine():
         host = os.environ["MYSQL_HOST"]
         user, passwd = self.read_config()
         return MySQLdb.connect(host=host,user=user,passwd=passwd,db=db)
-        
-            
+
+
 def get_home_directory():
     from os.path import expanduser
     home = expanduser("~")
@@ -52,7 +52,7 @@ def get_home_directory():
 def get_tables():
     df = pcsv.any2csv.csv2df(run("SHOW tables"))
     return [r[0] for r in df.values]
-    
+
 def lookup_table_abbreviation(abbrev):
     table_list = get_tables()
     if abbrev in table_list:
@@ -99,7 +99,7 @@ def process_field(f):
         return "NULL"
     else:
         return str(f)
-    
+
 def readCL():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i","--index",action="store_true",help="show indexes on a table")
@@ -170,7 +170,7 @@ def main():
         sys.stdout.write(out + "\n")
     else:
         out = pcsv.any2csv.csv2pretty(out,max_field_size)
-        pcsv.utils.lines2less(out.split("\n"))
+        jtutils.lines2less(out.split("\n"))
 
 if __name__ == "__main__":
     main()
