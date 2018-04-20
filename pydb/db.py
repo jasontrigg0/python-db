@@ -3,6 +3,7 @@ import MySQLdb
 import sys
 import argparse
 import os
+import re
 
 import jtutils
 import pcsv.any2csv
@@ -63,6 +64,58 @@ def lookup_table_abbreviation(abbrev):
             return table
     return None
 
+def test_delete_query(s, params):
+    if "DELETE" in s.upper():
+        #DELETE syntax: https://dev.mysql.com/doc/refman/5.7/en/delete.html
+        delete_clause = "(DELETE|delete).*(FROM|from)"
+        if not re.findall(delete_clause, s.upper()):
+            raise Exception("Unusual delete syntax".format(s))
+        query = re.sub(delete_clause,"",s)
+        query = re.sub(".*(USING|using)","",query)
+        #wonky syntax to make limit statements work
+        #or else SELECT COUNT(*) FROM blah LIMIT 5 isn't limited by 5
+        #https://stackoverflow.com/q/17020842
+        select_query = "SELECT COUNT(*) FROM (SELECT 1 FROM "+query+") as a"
+        try:
+            out = run(select_query, df=True, params=params)
+        except:
+            sys.stderr.write("WARNING: unable to run row count query.")
+            return True
+            # return jtutils.y_n_input("WARNING: unable to run row count query. Do you want to continue? [y/n]\n")
+        cnt = out.values[0][0]
+        if cnt >= 10:
+            return jtutils.y_n_input("WARNING: this command will delete {} rows. Do you want to continue? [y/n]\n".format(cnt))
+        else:
+            return True
+    return True
+
+def test_update_query(s, params):
+    if "UPDATE" in s.upper():
+        #UPDATE syntax: https://dev.mysql.com/doc/refman/5.7/en/update.html
+        update_clause = "(UPDATE|update).*(SET|set)"
+        if not re.findall(update_clause, s.upper()):
+            raise Exception("Unusual update syntax: {}".format(s))
+        query = re.sub("(LOW_PRIORITY|low_priority)","",s)
+        query = re.sub("(IGNORE|ignore)","",query)
+        query = re.sub("(SET|set).*?(WHERE|where|ORDER BY|order by|LIMIT|limit|$)","\\2",query)
+        query = re.sub("UPDATE","",query)
+        #wonky syntax to make limit statements work
+        #or else SELECT COUNT(*) FROM blah LIMIT 5 isn't limited by 5
+        #https://stackoverflow.com/q/17020842
+        select_query = "SELECT COUNT(*) FROM (SELECT 1 FROM "+query+") as a"
+        try:
+            out = run(select_query, df=True, params=params)
+        except:
+            sys.stderr.write("WARNING: unable to run row count query.")
+            return True
+            # return jtutils.y_n_input("WARNING: unable to run row count query. Do you want to continue? [y/n]\n")
+        cnt = out.values[0][0]
+        if cnt >= 10:
+            return jtutils.y_n_input("WARNING: this command will update {} rows. Do you want to continue? [y/n]\n".format(cnt))
+        else:
+            return True
+    return True
+
 def run(sql, df=False, params=None):
     return run_list([sql], df, [params])
 
@@ -75,10 +128,10 @@ def run_list(sql_list, df=False, params_list=None):
     pid = db.thread_id()
     try:
         for i,s in enumerate(sql_list):
-            if params_list:
-                cursor.execute(s,params_list[i])
-            else:
-                cursor.execute(s)
+            params = params_list[i] if params_list else None
+            if not test_delete_query(s, params): return
+            if not test_update_query(s, params): return
+            cursor.execute(s,params)
     except (KeyboardInterrupt, SystemExit):
         new_cursor = MySQLdb_Engine.connect().cursor() #old cursor/connection is unusable
         new_cursor.execute('KILL QUERY ' + str(pid))
