@@ -65,9 +65,10 @@ def lookup_table_abbreviation(abbrev):
     return None
 
 def test_delete_query(s, params):
-    if "DELETE" in s.upper():
+    delete_start = "^[ ]*(DELETE|delete) "
+    if re.findall(delete_start,s):
         #DELETE syntax: https://dev.mysql.com/doc/refman/5.7/en/delete.html
-        delete_clause = "(DELETE|delete).*(FROM|from)"
+        delete_clause = "^[ ]*(DELETE|delete) .*(FROM|from)"
         if not re.findall(delete_clause, s.upper()):
             raise Exception("Unusual delete syntax".format(s))
         query = re.sub(delete_clause,"",s)
@@ -90,9 +91,10 @@ def test_delete_query(s, params):
     return True
 
 def test_update_query(s, params):
-    if "UPDATE" in s.upper():
+    update_start = "^[ ]*(UPDATE|update) "
+    if re.findall(update_start,s):
         #UPDATE syntax: https://dev.mysql.com/doc/refman/5.7/en/update.html
-        update_clause = "(UPDATE|update).*(SET|set)"
+        update_clause = "^[ ]*(UPDATE|update) .*(SET|set)"
         if not re.findall(update_clause, s.upper()):
             raise Exception("Unusual update syntax: {}".format(s))
         query = re.sub("(LOW_PRIORITY|low_priority)","",s)
