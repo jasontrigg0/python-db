@@ -1,4 +1,13 @@
 #!/usr/bin/env python2
+#profiling results:
+#total time = 0.35 - 0.4 (slower on the first run)
+#0.08 - 0.09 for SHOW TABLES to lookup abbreviations
+#0.08 - 0.09 for main query
+#(half of the query time for the main query, second half for the commit)
+#0.11 for imports (note: jtutils imports were slow before, may want to watch this)
+#~0.1 for the rest
+#if database needs a reconnect that's 0.3-0.4ish? but this is usually avoided by the server
+
 import MySQLdb
 import sys
 import argparse
@@ -9,8 +18,9 @@ import jtutils
 import pcsv.any2csv
 
 import pydb.utils
+import pyservice
 
-class MySQLdb_Engine():
+class MySQLdb_Engine(object): #, metaclass=pydb.utils.Singleton):
     __metaclass__ = pydb.utils.Singleton
     def __init__(self):
         self.connection = self.connect()
@@ -51,7 +61,8 @@ def get_home_directory():
     return home
 
 def get_tables():
-    df = pcsv.any2csv.csv2df(run("SHOW tables"))
+    x = run("SHOW tables")
+    df = pcsv.any2csv.csv2df(x)
     return [r[0] for r in df.values]
 
 def lookup_table_abbreviation(abbrev):
@@ -68,7 +79,7 @@ def test_delete_query(s, params):
     delete_start = "^[ ]*(DELETE|delete) "
     if re.findall(delete_start,s):
         #DELETE syntax: https://dev.mysql.com/doc/refman/5.7/en/delete.html
-        delete_clause = "^[ ]*(DELETE|delete) .*(FROM|from)"
+        delete_clause = "^[ ]*(DELETE|delete) .*?(FROM|from)" #.*? to pull the first instance of FROM
         if not re.findall(delete_clause, s.upper()):
             raise Exception("Unusual delete syntax".format(s))
         query = re.sub(delete_clause,"",s)
@@ -94,7 +105,7 @@ def test_update_query(s, params):
     update_start = "^[ ]*(UPDATE|update) "
     if re.findall(update_start,s):
         #UPDATE syntax: https://dev.mysql.com/doc/refman/5.7/en/update.html
-        update_clause = "^[ ]*(UPDATE|update) .*(SET|set)"
+        update_clause = "^[ ]*(UPDATE|update) .*?(SET|set)" #.*? to pull the first instance of SET
         if not re.findall(update_clause, s.upper()):
             raise Exception("Unusual update syntax: {}".format(s))
         query = re.sub("(LOW_PRIORITY|low_priority)","",s)
@@ -155,29 +166,222 @@ def process_field(f):
     else:
         return str(f)
 
-def readCL():
+def foreign_key_graph():
+    df = run('SELECT k.TABLE_NAME, k.COLUMN_NAME, i.CONSTRAINT_TYPE, i.CONSTRAINT_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME FROM information_schema.TABLE_CONSTRAINTS i LEFT JOIN information_schema.KEY_COLUMN_USAGE k ON i.CONSTRAINT_NAME = k.CONSTRAINT_NAME WHERE i.CONSTRAINT_TYPE = "FOREIGN KEY" AND i.TABLE_SCHEMA = DATABASE()', df=True)
+    graph = df[["TABLE_NAME","COLUMN_NAME","REFERENCED_TABLE_NAME","REFERENCED_COLUMN_NAME"]].values
+    graph = [((x[0],x[1]),(x[2],x[3])) for x in graph]
+    graph = list(set(graph)) #dedup
+    return graph
+
+def get_fields():
+    return run('select TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH from information_schema.columns where table_schema = DATABASE() order by table_name, ordinal_position', df=True)
+
+def downstream_query(tables):
+    fields = get_fields()
+
+    graph = foreign_key_graph()
+    foreign_key_columns = set(x[0] for x in graph) #foreign_key_columns = {("table1","col1")}
+
+
+    table_to_columns = {}
+    for table, column, is_nullable, data_type in fields[["TABLE_NAME","COLUMN_NAME","IS_NULLABLE","DATA_TYPE"]].values:
+        table_to_columns.setdefault(table,[])
+        if is_nullable == "YES": continue #skip nullable columns
+        if (table,column) in foreign_key_columns: continue
+        if data_type not in ["enum","varchar"]: continue
+        table_to_columns[table].append(column)
+
+    todo_up = set()
+    # todo_up.add("linked_issuing_entities")
+    #out = run("SELECT * FROM investing_entities");
+
+    start_table = tables[0]
+    tables_to_join = tables[1:]
+    #join on the tables_to_join even if it requires one step upstream
+    #eg: if the table graph is contacts <--- firm_contacts ---> firms
+    #if tables = [contacts, firms]
+    #then start_table = contacts, tables_to_join = [firms]
+    #then we'll join one step upstream to firm_contacts so we can include firms
+    #intermediates = [firm_contacts]
+    intermediates = {}
+    for start,end in graph:
+        if start[0] == "firm_contacts":
+            print(start,end)
+        if start[0] not in tables_to_join and end[0] in tables_to_join:
+            intermediates[start[0]] = end[0]
+    select_cols = [" "+start_table+"."+col+" as "+"".join([x[0] for x in start_table.split("_")])+"$"+col+" " for col in table_to_columns[start_table]]
+    body = "FROM {start_table}".format(**vars())
+    todo = set()
+    done = set()
+    todo.add(start_table)
+    while len(todo) > 0:
+        table = todo.pop()
+        for start,end in graph:
+            start_table = start[0]
+            start_col = start[1]
+            end_table = end[0]
+            end_col = end[1]
+            if start_table == table:
+                if end_table in todo.union(done).union(set([table])):
+                    #print(f"repeat: {start_table} -> {end_table}")
+                    continue #already joined on this
+                select_cols += [" "+end_table+"."+col+" as "+"".join([x[0] for x in end_table.split("_")])+"$"+col+" " for col in table_to_columns[end_table]]
+                body += ' LEFT OUTER JOIN {end_table} ON {end_table}.{end_col} = {start_table}.{start_col}'.format(**vars())
+                print('ADDING: {end_table}'.format(**vars()))
+                todo.add(end_table)
+            elif start_table in intermediates and intermediates[start_table] not in todo.union(done).union(set([table])) and end_table == table:
+                if start_table in todo.union(done).union(set([table])):
+                    continue #already joined on this
+                select_cols += [" "+start_table+"."+col+" as "+"".join([x[0] for x in start_table.split("_")])+"$"+col+" " for col in table_to_columns[start_table]]
+                body += ' LEFT OUTER JOIN {start_table} ON {end_table}.{end_col} = {start_table}.{start_col}'.format(**vars())
+                print('ADDING INTERMEDIATE: {start_table} for help with {intermediates[start_table]}'.format(**vars()))
+                print(intermediates[start_table])
+                todo.add(start_table)
+        done.add(table)
+    print(done)
+    query = "SELECT " + ",".join(select_cols) + " " + body
+    print("SELECT " + ",".join(select_cols) + " " + body)
+    for t in tables_to_join:
+        if not t in done:
+            raise Exception("Couldn't join from {start_table} to {t}. Can you add an intermediate table to help?".format(**vars()))
+    return query
+
+
+def gen_tree(reverse):
+    #print a tree of tables like the tree command
+    """
+    .
+    ├── bak.babelrc
+    ├── build
+    │   ├── asset-manifest.json
+    │   ├── marketing
+    │   │   ├── favicon.ico
+
+    """
+
+    all_nodes = set(get_tables())
+    fk_graph_list = foreign_key_graph()
+    if reverse:
+        table_graph_list = list(set([(x2[0],x1[0]) for x1,x2 in fk_graph_list if x1[0] != x2[0]])) #remove self-edges and dups
+    else:
+        table_graph_list = list(set([(x1[0],x2[0]) for x1,x2 in fk_graph_list if x1[0] != x2[0]])) #remove self-edges and dups
+    table_graph_dict = {}
+    reverse_table_graph_dict = {}
+    for t1,t2 in table_graph_list:
+        table_graph_dict.setdefault(t1,[]).append(t2)
+        reverse_table_graph_dict.setdefault(t2,[]).append(t1)
+    for t in all_nodes:
+        table_graph_dict.setdefault(t,[])
+        reverse_table_graph_dict.setdefault(t,[])
+
+    #taking the root of the tree as the node with no outgoing edges
+    #(this is opposite of the regular convention?)
+    root_nodes = []
+    for t in all_nodes:
+        if len(reverse_table_graph_dict[t]) == 0:
+            root_nodes.append(t)
+
+    #add all nodes downstream from root_nodes to done
+    todo = root_nodes[:]
+    done = set()
+    while len(todo) > 0:
+        t = todo.pop()
+        for child in table_graph_dict[t]:
+            if child in done: continue
+            todo.append(child)
+        done.add(t)
+
+    #grab the remaining components (may not be trees) one at a time
+    for t in all_nodes:
+        if t in done: continue
+        todo = [t]
+        component = []
+        #compute this component
+        while len(todo) > 0:
+            t = todo.pop()
+            if t in component: continue
+            for child in table_graph_dict[t]:
+                todo.append(child)
+            component.append(t)
+        root = sorted(component, key=lambda x: len(table_graph_dict[x]), reverse=True)[0]
+        root_nodes.append(root)
+        done = done.union(set(component))
+
+
+    def prefix(depth, active_depths):
+        out = ""
+        if depth == 0: return out
+        for d in active_depths[:-1]:
+            if d:
+                out +=  "│   "
+            else:
+                out +=  "    "
+        if active_depths[-1]:
+            out += "├── "
+        else:
+            out += "└── "
+        return out
+
+    def tree(node, depth, active_depths): #active_depths: levels of the tree that have more children remaining
+        out = prefix(depth, active_depths) + node + '\n'
+        if node in done:
+            return out
+        else:
+            done.add(node)
+            children = list(table_graph_dict[node])
+            children.sort(key = lambda x: len(table_graph_dict[x]),reverse=True)
+            for i,child in enumerate(children):
+                if i == len(children) - 1: #last child
+                    out += tree(child, depth+1, active_depths + [0])
+                else:
+                    out += tree(child, depth+1, active_depths + [1])
+        return out
+
+    out = ""
+    #print trees, starting from the table with the most incoming edges
+    for k in sorted(root_nodes, key=lambda x: len(table_graph_dict[x]), reverse=True):
+        done = set()
+        out += (tree(k,0,[]))
+        out += "\n\n"
+
+    return out
+
+
+def readCL(args):
     parser = argparse.ArgumentParser()
     parser.add_argument("-i","--index",action="store_true",help="show indexes on a table")
     parser.add_argument("-d","--describe",action="store_true",help="describe table")
     parser.add_argument("--cat",action="store_true")
     parser.add_argument("--head",action="store_true")
     parser.add_argument("--tail",action="store_true")
-    parser.add_argument("-r","--raw",action="store_true",help="print raw csv instead of pretty printing")
-    parser.add_argument("-a","--show_all",action="store_true",help="print entire fields regardless of width")
     parser.add_argument("--top",action="store_true",help="show currently running processes")
     parser.add_argument("-p","--profile",action="store_true",help="profile the given query")
     parser.add_argument("-k","--kill")
     parser.add_argument("-t","--table", action="store_true", help="db -t table_name col1 col2... --> frequencies for col1,col2 in table_name")
     parser.add_argument("-w","--where",action="store_true",help="db -w table_name col val --> 'SELECT * FROM table_name WHERE col = val'")
     parser.add_argument("--key",action="store_true", help="db --key table_name primary_key_value --> 'SELECT * FROM table_name WHERE primary_key = primary_key_value'")
+    parser.add_argument("--tree",action="store_true",help="view tree(s) of foreign key dependencies between tables")
+    parser.add_argument("--tree_rev",action="store_true",help="view reversed tree, for help when deleting tables")
+    parser.add_argument("--cascade_select",nargs="*",help="starting from one table, join all tables referred to by foreign keys") #TODO: make a human-readable version that shows only the most important columns
     parser.add_argument("positional",nargs="*")
-    args = parser.parse_args()
+    if args:
+        args, _ = parser.parse_known_args(args[1:]) #args[0] is the script name
+    else:
+        args, _ = parser.parse_known_args()
     if args.top:
         args.show_all = True
-    return args.index, args.describe, args.cat, args.head, args.tail, args.show_all, args.top, args.kill, args.profile, args.where, args.key, args.table, args.raw, args.positional
+    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select
 
-def main():
-    index, describe, cat, head, tail, show_all, top, kill, profile, where, key, freq, raw, pos = readCL()
+def readCL_output():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-r","--raw",action="store_true",help="print raw csv instead of pretty printing")
+    parser.add_argument("-a","--show_all",action="store_true",help="print entire fields regardless of width")
+    args, _ = parser.parse_known_args()
+    return args.raw, args.show_all
+
+
+def execute_query(args):
+    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select = readCL(args)
     if any([index, describe, cat, head, tail, where, key, freq]):
         lookup = lookup_table_abbreviation(pos[0])
         if lookup:
@@ -210,22 +414,45 @@ def main():
     elif freq:
         csv = ",".join(pos[1:])
         out = run("SELECT {csv},count(*) FROM {table} GROUP BY {csv}".format(**vars()))
+    elif tree:
+        out = gen_tree(False)
+    elif tree_rev:
+        out = gen_tree(True)
+    elif cascade_select:
+        graph = foreign_key_graph()
+        fields = get_fields()
+        out = run(downstream_query(cascade_select))
     else:
         if profile:
             out = run_list(['SET profiling = 1;'] + pos + ["SHOW PROFILE"])
         else:
             out = run_list(pos)
+    return out
 
+
+def display_output(out):
+    raw, show_all = readCL_output()
     if show_all:
         max_field_size = None
     else:
         max_field_size = 50
+
+    if not out:
+        return
 
     if raw:
         sys.stdout.write(out + "\n")
     else:
         out = pcsv.any2csv.csv2pretty(out,max_field_size)
         jtutils.lines2less(out.split("\n"))
+
+def main():
+    USE_SERVICE = False
+    if USE_SERVICE:
+        pyservice.Service('python-db', daemon_main = execute_query, client_receiver = lambda x: display_output(x)).run()
+    else:
+        out = execute_query(sys.argv)
+        display_output(out)
 
 if __name__ == "__main__":
     main()
