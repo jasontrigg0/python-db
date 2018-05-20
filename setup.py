@@ -1,4 +1,4 @@
-from distutils.core import setup
+from setuptools import setup
 setup(
     name = 'python-db',
     packages = ['pydb'],
@@ -12,7 +12,8 @@ setup(
     install_requires=['mysqldb',
                       'argparse',
                       'jtutils',
-                      'python-csv'
+                      'python-csv',
+                      'python-service'
     ],
     keywords = [],
     classifiers = [],
