@@ -9,8 +9,7 @@ setup(
     url = "https://github.com/jasontrigg0/python-db",
     download_url = 'https://github.com/jasontrigg0/python-db/tarball/0.0.3',
     scripts=['bin/db'],
-    install_requires=['mysqldb',
-                      'argparse',
+    install_requires=['argparse',
                       'jtutils',
                       'python-csv',
                       'python-service'
