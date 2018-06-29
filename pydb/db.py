@@ -362,7 +362,8 @@ def readCL(args):
     parser.add_argument("--key",action="store_true", help="db --key table_name primary_key_value --> 'SELECT * FROM table_name WHERE primary_key = primary_key_value'")
     parser.add_argument("--tree",action="store_true",help="view tree(s) of foreign key dependencies between tables")
     parser.add_argument("--tree_rev",action="store_true",help="view reversed tree, for help when deleting tables")
-    parser.add_argument("--cascade_select",nargs="*",help="starting from one table, join all tables referred to by foreign keys") #TODO: make a human-readable version that shows only the most important columns
+    parser.add_argument("--cascade_select",nargs="*",help="starting from one table, join all tables referred to by foreign keys")
+    parser.add_argument("--cascade_select_query",nargs="*",help="print query to start from one table and join all tables referred to by foreign keys")
     parser.add_argument("positional",nargs="*")
     if args:
         args, _ = parser.parse_known_args(args[1:]) #args[0] is the script name
@@ -370,7 +371,7 @@ def readCL(args):
         args, _ = parser.parse_known_args()
     if args.top:
         args.show_all = True
-    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select
+    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select, args.cascade_select_query
 
 def readCL_output():
     parser = argparse.ArgumentParser()
@@ -381,7 +382,7 @@ def readCL_output():
 
 
 def execute_query(args):
-    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select = readCL(args)
+    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select, cascade_select_query = readCL(args)
     if any([index, describe, cat, head, tail, where, key, freq]):
         lookup = lookup_table_abbreviation(pos[0])
         if lookup:
@@ -422,6 +423,10 @@ def execute_query(args):
         graph = foreign_key_graph()
         fields = get_fields()
         out = run(downstream_query(cascade_select))
+    elif cascade_select_query:
+        graph = foreign_key_graph()
+        fields = get_fields()
+        out = downstream_query(cascade_select_query)
     else:
         if profile:
             out = run_list(['SET profiling = 1;'] + pos + ["SHOW PROFILE"])
