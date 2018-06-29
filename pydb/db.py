@@ -262,9 +262,9 @@ def gen_tree(reverse):
     all_nodes = set(get_tables())
     fk_graph_list = foreign_key_graph()
     if reverse:
-        table_graph_list = list(set([(x2[0],x1[0]) for x1,x2 in fk_graph_list if x1[0] != x2[0]])) #remove self-edges and dups
-    else:
         table_graph_list = list(set([(x1[0],x2[0]) for x1,x2 in fk_graph_list if x1[0] != x2[0]])) #remove self-edges and dups
+    else:
+        table_graph_list = list(set([(x2[0],x1[0]) for x1,x2 in fk_graph_list if x1[0] != x2[0]])) #remove self-edges and dups
     table_graph_dict = {}
     reverse_table_graph_dict = {}
     for t1,t2 in table_graph_list:
