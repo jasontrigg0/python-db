@@ -174,7 +174,7 @@ def foreign_key_graph():
     return graph
 
 def get_fields():
-    return run('select TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH from information_schema.columns where table_schema = DATABASE() order by table_name, ordinal_position', df=True)
+    return run('select TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, COLUMN_KEY from information_schema.columns where table_schema = DATABASE() order by table_name, ordinal_position', df=True)
 
 def downstream_query(tables):
     fields = get_fields()
@@ -184,10 +184,13 @@ def downstream_query(tables):
 
 
     table_to_columns = {}
-    for table, column, is_nullable, data_type in fields[["TABLE_NAME","COLUMN_NAME","IS_NULLABLE","DATA_TYPE"]].values:
+    for table, column, is_nullable, data_type, column_key in fields[["TABLE_NAME","COLUMN_NAME","IS_NULLABLE","DATA_TYPE","COLUMN_KEY"]].values:
         table_to_columns.setdefault(table,[])
         if is_nullable == "YES": continue #skip nullable columns
-        if (table,column) in foreign_key_columns: continue
+        if (table,column) in foreign_key_columns: continue #skip foreign keys
+        #print id columns that aren't foreign keys
+        if column_key in ["PRI","MUL"]:
+            table_to_columns[table].append(column)
         if data_type not in ["enum","varchar"]: continue
         table_to_columns[table].append(column)
 
@@ -205,8 +208,6 @@ def downstream_query(tables):
     #intermediates = [firm_contacts]
     intermediates = {}
     for start,end in graph:
-        if start[0] == "firm_contacts":
-            print(start,end)
         if start[0] not in tables_to_join and end[0] in tables_to_join:
             intermediates[start[0]] = end[0]
     select_cols = [" "+start_table+"."+col+" as "+"".join([x[0] for x in start_table.split("_")])+"$"+col+" " for col in table_to_columns[start_table]]
@@ -227,23 +228,22 @@ def downstream_query(tables):
                     continue #already joined on this
                 select_cols += [" "+end_table+"."+col+" as "+"".join([x[0] for x in end_table.split("_")])+"$"+col+" " for col in table_to_columns[end_table]]
                 body += ' LEFT OUTER JOIN {end_table} ON {end_table}.{end_col} = {start_table}.{start_col}'.format(**vars())
-                print('ADDING: {end_table}'.format(**vars()))
+                #print('ADDING: {end_table}'.format(**vars()))
                 todo.add(end_table)
             elif start_table in intermediates and intermediates[start_table] not in todo.union(done).union(set([table])) and end_table == table:
                 if start_table in todo.union(done).union(set([table])):
                     continue #already joined on this
                 select_cols += [" "+start_table+"."+col+" as "+"".join([x[0] for x in start_table.split("_")])+"$"+col+" " for col in table_to_columns[start_table]]
                 body += ' LEFT OUTER JOIN {start_table} ON {end_table}.{end_col} = {start_table}.{start_col}'.format(**vars())
-                print('ADDING INTERMEDIATE: {start_table} for help with {intermediates[start_table]}'.format(**vars()))
-                print(intermediates[start_table])
+                #print('ADDING INTERMEDIATE: {start_table} for help with {intermediates[start_table]}'.format(**vars()))
+                #print(intermediates[start_table])
                 todo.add(start_table)
         done.add(table)
-    print(done)
-    query = "SELECT " + ",".join(select_cols) + " " + body
-    print("SELECT " + ",".join(select_cols) + " " + body)
     for t in tables_to_join:
         if not t in done:
             raise Exception("Couldn't join from {start_table} to {t}. Can you add an intermediate table to help?".format(**vars()))
+    query = "SELECT " + ",".join(select_cols) + " " + body
+    #print(done)
     return query
 
 
