@@ -20,6 +20,8 @@ import pcsv.any2csv
 import pydb.utils
 import pyservice
 
+import math
+
 class MySQLdb_Engine(object): #, metaclass=pydb.utils.Singleton):
     __metaclass__ = pydb.utils.Singleton
     def __init__(self):
@@ -167,6 +169,9 @@ def process_field(f):
         return str(f)
 
 def foreign_key_graph():
+    #@returns [(origin_table, origin_column),(destination_table, destination_column)]
+    #@example:
+    #[(('outbound_emails', 'issuing_entity_id'), ('issuing_entities', 'id')), (('downloads', 'document_file_id'), ('document_files', 'id')), (('account_activity_documents', 'activity_id'), ('account_activities', 'id')), (('BACKUP_linked_firms', 'investing_entity_id'), ('investing_entities', 'id')), (('investments', 'type_id'), ('investment_types', 'id'))]
     df = run('SELECT k.TABLE_NAME, k.COLUMN_NAME, i.CONSTRAINT_TYPE, i.CONSTRAINT_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME FROM information_schema.TABLE_CONSTRAINTS i LEFT JOIN information_schema.KEY_COLUMN_USAGE k ON i.CONSTRAINT_NAME = k.CONSTRAINT_NAME WHERE i.CONSTRAINT_TYPE = "FOREIGN KEY" AND i.TABLE_SCHEMA = DATABASE()', df=True)
     graph = df[["TABLE_NAME","COLUMN_NAME","REFERENCED_TABLE_NAME","REFERENCED_COLUMN_NAME"]].values
     graph = [((x[0],x[1]),(x[2],x[3])) for x in graph]
@@ -176,7 +181,47 @@ def foreign_key_graph():
 def get_fields():
     return run('select TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, COLUMN_KEY from information_schema.columns where table_schema = DATABASE() order by table_name, ordinal_position', df=True)
 
-def downstream_query(tables):
+def merge_fn(table, where_clause, row_dict):
+    #merge all rows with table satisfying where_clause
+    #to the row with values row_dict
+    #(requires id column in table)
+    graph = foreign_key_graph()
+    deps = [g for g in graph if g[1][0] == table]
+
+    if not "id" in row_dict:
+        raise Exception("Merging requires an id column")
+
+    query = 'UPDATE {table}'.format(**vars())
+    joins = []
+    sets = []
+    where = ""
+
+    #TODO: print the rows and then confirm before proceeding
+    print(run('SELECT * FROM '+table+' WHERE id = ' + str(row_dict["id"])))
+    print(run('SELECT * FROM {table} WHERE {where_clause}'.format(**vars())))
+
+    for d in deps:
+        start, end = d
+        start_table, start_col = start
+        end_table, end_col = end
+        joins.append(' LEFT OUTER JOIN {start_table} ON {end_table}.{end_col} = {start_table}.{start_col}'.format(**vars()))
+        new_val = row_dict[end_col]
+        sets.append(' {start_table}.{start_col} = {new_val}'.format(**vars()))
+
+
+    update_query = query + ''.join(joins) + " SET " + ','.join(sets) + " WHERE " + where_clause
+    delete_query = "DELETE FROM {table} WHERE {where_clause} AND NOT {table}.id = ".format(**vars())+str(row_dict["id"])
+
+    print(update_query)
+    print(delete_query)
+    ok = jtutils.y_n_input('Do you want to merge the above rows? [y/n]\n')
+    if not ok: return
+
+    run(update_query)
+    run(delete_query)
+
+
+def downstream_query(tables, show_all=False):
     fields = get_fields()
 
     graph = foreign_key_graph()
@@ -186,6 +231,9 @@ def downstream_query(tables):
     table_to_columns = {}
     for table, column, is_nullable, data_type, column_key in fields[["TABLE_NAME","COLUMN_NAME","IS_NULLABLE","DATA_TYPE","COLUMN_KEY"]].values:
         table_to_columns.setdefault(table,[])
+        if show_all: #view all columns
+            table_to_columns[table].append(column)
+            continue
         if is_nullable == "YES": continue #skip nullable columns
         if (table,column) in foreign_key_columns: continue #skip foreign keys
         #print id columns that aren't foreign keys
@@ -210,7 +258,13 @@ def downstream_query(tables):
     for start,end in graph:
         if start[0] not in tables_to_join and end[0] in tables_to_join:
             intermediates[start[0]] = end[0]
-    select_cols = [" "+start_table+"."+col+" as "+"".join([x[0] for x in start_table.split("_")])+"$"+col+" " for col in table_to_columns[start_table]]
+
+    def field_name(table, column, show_all):
+        if show_all:
+            return table + "." + column + " as " + table + "$" + column
+        else:
+            return table + "." + column + " as " + "".join([x[0] for x in table.split("_")])+"$"+column
+    select_cols = [field_name(start_table,col,show_all) for col in table_to_columns[start_table]]
     body = "FROM {start_table}".format(**vars())
     todo = set()
     done = set()
@@ -226,14 +280,14 @@ def downstream_query(tables):
                 if end_table in todo.union(done).union(set([table])):
                     #print(f"repeat: {start_table} -> {end_table}")
                     continue #already joined on this
-                select_cols += [" "+end_table+"."+col+" as "+"".join([x[0] for x in end_table.split("_")])+"$"+col+" " for col in table_to_columns[end_table]]
+                select_cols += [field_name(end_table,col,show_all) for col in table_to_columns[end_table]]
                 body += ' LEFT OUTER JOIN {end_table} ON {end_table}.{end_col} = {start_table}.{start_col}'.format(**vars())
                 #print('ADDING: {end_table}'.format(**vars()))
                 todo.add(end_table)
             elif start_table in intermediates and intermediates[start_table] not in todo.union(done).union(set([table])) and end_table == table:
                 if start_table in todo.union(done).union(set([table])):
                     continue #already joined on this
-                select_cols += [" "+start_table+"."+col+" as "+"".join([x[0] for x in start_table.split("_")])+"$"+col+" " for col in table_to_columns[start_table]]
+                select_cols += [field_name(start_table,col,show_all) for col in table_to_columns[start_table]]
                 body += ' LEFT OUTER JOIN {start_table} ON {end_table}.{end_col} = {start_table}.{start_col}'.format(**vars())
                 #print('ADDING INTERMEDIATE: {start_table} for help with {intermediates[start_table]}'.format(**vars()))
                 #print(intermediates[start_table])
@@ -363,7 +417,10 @@ def readCL(args):
     parser.add_argument("--tree",action="store_true",help="view tree(s) of foreign key dependencies between tables")
     parser.add_argument("--tree_rev",action="store_true",help="view reversed tree, for help when deleting tables")
     parser.add_argument("--cascade_select",nargs="*",help="starting from one table, join all tables referred to by foreign keys")
+    parser.add_argument("--cascade_select_all",nargs="*",help="like --cascade_select_all, but shows all columns instead of select columns")
     parser.add_argument("--cascade_select_query",nargs="*",help="print query to start from one table and join all tables referred to by foreign keys")
+    parser.add_argument("--merge_dups",nargs=2,help="db --merge_dups users first_name,last_name")
+    parser.add_argument("--merge",nargs=3,help="merge all dependencies on one row from a table to point to another row from that table. example to switch everything pointing to user 210 -> user 217: db --merge users 'users.id = 210' 'users.id = 217'")
     parser.add_argument("positional",nargs="*")
     if args:
         args, _ = parser.parse_known_args(args[1:]) #args[0] is the script name
@@ -371,7 +428,7 @@ def readCL(args):
         args, _ = parser.parse_known_args()
     if args.top:
         args.show_all = True
-    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select, args.cascade_select_query
+    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select, args.cascade_select_all, args.cascade_select_query, args.merge_dups, args.merge
 
 def readCL_output():
     parser = argparse.ArgumentParser()
@@ -382,7 +439,7 @@ def readCL_output():
 
 
 def execute_query(args):
-    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select, cascade_select_query = readCL(args)
+    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select, cascade_select_all, cascade_select_query, merge_dups, merge = readCL(args)
     if any([index, describe, cat, head, tail, where, key, freq]):
         lookup = lookup_table_abbreviation(pos[0])
         if lookup:
@@ -420,13 +477,38 @@ def execute_query(args):
     elif tree_rev:
         out = gen_tree(True)
     elif cascade_select:
-        graph = foreign_key_graph()
-        fields = get_fields()
-        out = run(downstream_query(cascade_select))
+        query = downstream_query(cascade_select[:1])
+        if len(cascade_select) > 1:
+            query += " " + cascade_select[1]
+        out = run(query)
+    elif cascade_select_all:
+        query = downstream_query(cascade_select_all[:1], True)
+        if len(cascade_select_all) > 1:
+            query += " " + cascade_select_all[1]
+        out = run(query)
     elif cascade_select_query:
-        graph = foreign_key_graph()
-        fields = get_fields()
         out = downstream_query(cascade_select_query)
+    elif merge_dups:
+        table, cols = merge_dups
+        graph = foreign_key_graph()
+        duplicate_groups = run('SELECT * FROM {table} GROUP BY {cols} HAVING count(*) > 1'.format(**vars()),df=True)
+        for r2 in duplicate_groups.to_dict('records'):
+            where_clause = " AND ".join([table+"."+str(c)+" = "+str(r2[c]) for c in cols.split(",")])
+            if any([math.isnan(r2[c]) for c in cols.split(",")]):
+                print("WARNING: nan detected. Skipping...")
+                print(r2)
+                continue
+            merge_fn(table, where_clause, r2)
+    elif merge:
+        table, where1, where2 = merge
+        if not table in where1 or not table in where2:
+            raise Exception('merge where clauses should include the name of the table: {table}'.format(**vars()))
+
+        r2 = run('SELECT * FROM {table} WHERE {where2}'.format(**vars()),df=True)
+        if len(r2) > 1:
+            raise Exception('merge SELECT clause should return only a single row')
+        r2 = r2.to_dict('records')[0]
+        merge_fn(table, where1, r2)
     else:
         if profile:
             out = run_list(['SET profiling = 1;'] + pos + ["SHOW PROFILE"])
