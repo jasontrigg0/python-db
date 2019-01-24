@@ -83,7 +83,7 @@ def test_delete_query(s, params):
         if not re.findall(delete_clause, s.upper()):
             raise Exception("Unusual delete syntax".format(s))
         query = re.sub(delete_clause,"",s)
-        query = re.sub(".*(USING|using)","",query)
+        query = re.sub(".*\\b(USING|using)\\b","",query)
         #wonky syntax to make limit statements work
         #or else SELECT COUNT(*) FROM blah LIMIT 5 isn't limited by 5
         #https://stackoverflow.com/q/17020842
@@ -108,10 +108,10 @@ def test_update_query(s, params):
         update_clause = "^[ ]*(UPDATE|update) .*?(SET|set)" #.*? to pull the first instance of SET
         if not re.findall(update_clause, s.upper()):
             raise Exception("Unusual update syntax: {}".format(s))
-        query = re.sub("(LOW_PRIORITY|low_priority)","",s)
-        query = re.sub("(IGNORE|ignore)","",query)
-        query = re.sub("(SET|set).*?(WHERE|where|ORDER BY|order by|LIMIT|limit|$)","\\2",query)
-        query = re.sub("UPDATE","",query)
+        query = re.sub("\\b(LOW_PRIORITY|low_priority)\\b","",s)
+        query = re.sub("\\b(IGNORE|ignore)\\b","",query)
+        query = re.sub("\\b(SET|set)\\b.*?(WHERE|where|ORDER BY|order by|LIMIT|limit|$)","\\2",query)
+        query = re.sub("\\bUPDATE\\b","",query)
         #wonky syntax to make limit statements work
         #or else SELECT COUNT(*) FROM blah LIMIT 5 isn't limited by 5
         #https://stackoverflow.com/q/17020842
