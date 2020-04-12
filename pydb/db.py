@@ -93,9 +93,9 @@ def test_delete_query(s, params):
         try:
             out = run(select_query, df=True, params=params)
         except:
-            sys.stderr.write("WARNING: unable to run row count query.")
-            return True
-            # return jtutils.y_n_input("WARNING: unable to run row count query. Do you want to continue? [y/n]\n")
+            # sys.stderr.write("WARNING: unable to run row count query.")
+            # return True
+            return jtutils.y_n_input("WARNING: unable to run row count query. Do you want to continue? [y/n]\n")
         cnt = out.values[0][0]
         if cnt >= 10:
             return jtutils.y_n_input("WARNING: this command will delete {} rows. Do you want to continue? [y/n]\n".format(cnt))
@@ -121,9 +121,9 @@ def test_update_query(s, params):
         try:
             out = run(select_query, df=True, params=params)
         except:
-            sys.stderr.write("WARNING: unable to run row count query.")
-            return True
-            # return jtutils.y_n_input("WARNING: unable to run row count query. Do you want to continue? [y/n]\n")
+            #sys.stderr.write("WARNING: unable to run row count query.")
+            #return True
+            return jtutils.y_n_input("WARNING: unable to run row count query. Do you want to continue? [y/n]\n")
         cnt = out.values[0][0]
         if cnt >= 10:
             return jtutils.y_n_input("WARNING: this command will update {} rows. Do you want to continue? [y/n]\n".format(cnt))
@@ -168,12 +168,17 @@ def process_field(f):
     else:
         return str(f)
 
-def foreign_key_graph():
+def foreign_key_graph(include_nullable = False):
     #@returns [(origin_table, origin_column),(destination_table, destination_column)]
     #@example:
     #[(('outbound_emails', 'issuing_entity_id'), ('issuing_entities', 'id')), (('downloads', 'document_file_id'), ('document_files', 'id')), (('account_activity_documents', 'activity_id'), ('account_activities', 'id')), (('BACKUP_linked_firms', 'investing_entity_id'), ('investing_entities', 'id')), (('investments', 'type_id'), ('investment_types', 'id'))]
+    fields = get_fields()
+    isNullable = {(x[0],x[1]):1*(x[2] == "YES") for x in fields[["TABLE_NAME","COLUMN_NAME","IS_NULLABLE"]].values}
     df = run('SELECT k.TABLE_NAME, k.COLUMN_NAME, i.CONSTRAINT_TYPE, i.CONSTRAINT_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME FROM information_schema.TABLE_CONSTRAINTS i LEFT JOIN information_schema.KEY_COLUMN_USAGE k ON i.CONSTRAINT_NAME = k.CONSTRAINT_NAME WHERE i.CONSTRAINT_TYPE = "FOREIGN KEY" AND i.TABLE_SCHEMA = DATABASE()', df=True)
-    graph = df[["TABLE_NAME","COLUMN_NAME","REFERENCED_TABLE_NAME","REFERENCED_COLUMN_NAME"]].values
+    if include_nullable:
+        graph = df[["TABLE_NAME","COLUMN_NAME","REFERENCED_TABLE_NAME","REFERENCED_COLUMN_NAME"]].values
+    else:
+        graph = df[["TABLE_NAME","COLUMN_NAME","REFERENCED_TABLE_NAME","REFERENCED_COLUMN_NAME"]][df.apply(lambda x: not isNullable[(x[0],x[1])], axis = 1)].values
     graph = [((x[0],x[1]),(x[2],x[3])) for x in graph]
     graph = list(set(graph)) #dedup
     return graph
@@ -221,7 +226,7 @@ def merge_fn(table, where_clause, row_dict):
     run(delete_query)
 
 
-def downstream_query(tables, show_all=False):
+def downstream_query(tables, select_clause=None, show_all=False):
     fields = get_fields()
 
     graph = foreign_key_graph()
@@ -296,7 +301,9 @@ def downstream_query(tables, show_all=False):
     for t in tables_to_join:
         if not t in done:
             raise Exception("Couldn't join from {start_table} to {t}. Can you add an intermediate table to help?".format(**vars()))
-    query = "SELECT " + ",".join(select_cols) + " " + body
+    if not select_clause:
+        select_clause = "SELECT " + ",".join(select_cols)
+    query = select_clause + " " + body
     #print(done)
     return query
 
@@ -421,6 +428,8 @@ def readCL(args):
     parser.add_argument("--cascade_select_query",nargs="*",help="print query to start from one table and join all tables referred to by foreign keys")
     parser.add_argument("--merge_dups",nargs=2,help="db --merge_dups users first_name,last_name")
     parser.add_argument("--merge",nargs=3,help="merge all dependencies on one row from a table to point to another row from that table. example to switch everything pointing to user 210 -> user 217: db --merge users 'users.id = 210' 'users.id = 217'")
+    parser.add_argument("-j","--join",help="automatically make the most logical join to the argument table based on foreign keys")
+    parser.add_argument("-s","--select",help="override the default select statement in, eg cascade_select")
     parser.add_argument("positional",nargs="*")
     if args:
         args, _ = parser.parse_known_args(args[1:]) #args[0] is the script name
@@ -428,7 +437,7 @@ def readCL(args):
         args, _ = parser.parse_known_args()
     if args.top:
         args.show_all = True
-    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select, args.cascade_select_all, args.cascade_select_query, args.merge_dups, args.merge
+    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select, args.cascade_select_all, args.cascade_select_query, args.merge_dups, args.merge, args.join, args.select
 
 def readCL_output():
     parser = argparse.ArgumentParser()
@@ -439,7 +448,7 @@ def readCL_output():
 
 
 def execute_query(args):
-    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select, cascade_select_all, cascade_select_query, merge_dups, merge = readCL(args)
+    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select, cascade_select_all, cascade_select_query, merge_dups, merge, join, select = readCL(args)
     if any([index, describe, cat, head, tail, where, key, freq]):
         lookup = lookup_table_abbreviation(pos[0])
         if lookup:
@@ -459,6 +468,7 @@ def execute_query(args):
     elif head:
         out = run("SELECT * FROM {table} LIMIT 10".format(**vars()))
     elif tail:
+        #TODO: support tail values != 10
         cnt = run("SELECT count(*) FROM {table}".format(**vars()), df=True)
         cnt = cnt.iloc[0,0]
         offset = int(cnt) - 10
@@ -477,17 +487,17 @@ def execute_query(args):
     elif tree_rev:
         out = gen_tree(True)
     elif cascade_select:
-        query = downstream_query(cascade_select[:1])
+        query = downstream_query(cascade_select[:1], select) #TODO: fix up downstream query to use graph logic more clearly
         if len(cascade_select) > 1:
             query += " " + cascade_select[1]
         out = run(query)
     elif cascade_select_all:
-        query = downstream_query(cascade_select_all[:1], True)
+        query = downstream_query(cascade_select_all[:1], select, True)
         if len(cascade_select_all) > 1:
             query += " " + cascade_select_all[1]
         out = run(query)
     elif cascade_select_query:
-        out = downstream_query(cascade_select_query)
+        out = downstream_query(cascade_select_query, select)
     elif merge_dups:
         table, cols = merge_dups
         graph = foreign_key_graph()
