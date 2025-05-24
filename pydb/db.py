@@ -186,6 +186,23 @@ def foreign_key_graph(include_nullable = False):
 def get_fields():
     return run('select TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, COLUMN_KEY from information_schema.columns where table_schema = DATABASE() order by table_name, ordinal_position', df=True)
 
+def get_table_to_columns(show_all):
+    fields = get_fields()
+    table_to_columns = {}
+    for table, column, is_nullable, data_type, column_key in fields[["TABLE_NAME","COLUMN_NAME","IS_NULLABLE","DATA_TYPE","COLUMN_KEY"]].values:
+        table_to_columns.setdefault(table,[])
+        if show_all: #view all columns
+            table_to_columns[table].append(column)
+            continue
+        if is_nullable == "YES": continue #skip nullable columns
+        if (table,column) in foreign_key_columns: continue #skip foreign keys
+        #print id columns that aren't foreign keys
+        if column_key in ["PRI","MUL"]:
+            table_to_columns[table].append(column)
+        if data_type not in ["enum","varchar"]: continue
+        table_to_columns[table].append(column)
+    return table_to_columns
+
 def merge_fn(table, where_clause, row_dict):
     #merge all rows with table satisfying where_clause
     #to the row with values row_dict
@@ -225,27 +242,88 @@ def merge_fn(table, where_clause, row_dict):
     run(update_query)
     run(delete_query)
 
+def shortest_path(start, ends, allow_reverse=False):
+    print(allow_reverse)
+    table_to_columns = get_table_to_columns(True)
+    graph = foreign_key_graph()
+    tables = list(set([x[0][0] for x in graph] + [x[1][0] for x in graph]))
+
+    distances = {}
+    for (t1,c1),(t2,c2) in graph:
+        distances.setdefault(t1,{})[t2] = 1
+        if allow_reverse:
+            distances.setdefault(t2,{})[t1] = 2
+            
+    all_joins = []
+
+    #we want to join from the start node to all end nodes
+    #solving greedily - ie first join from start to the first end
+    #node, then commit to using those edges and find the shortest
+    #path to the second end nodes etc
+    for table_end in ends:
+        backtrack = dijkstra(tables, distances, start)
+        
+        joins = []
+        if not table_end in backtrack:
+            raise Exception(f"Couldn't find a path from ${start} to ${table_end}")
+        node = table_end
+        while node in backtrack:
+            forward_edges = [x for x in graph if x[0][0] == backtrack[node] and x[1][0] == node]
+            reverse_edges = [x for x in graph if x[1][0] == backtrack[node] and x[0][0] == node]
+            if forward_edges:
+                joins.append({"edge":forward_edges[0],"dir":1})
+            elif reverse_edges:
+                joins.append({"edge":reverse_edges[0],"dir":-1})
+            else:
+                raise
+            node = backtrack[node]
+        for j in joins[::-1]:
+            if not j in all_joins:
+                all_joins.append(j)
+                if j["dir"] == 1:
+                    distances[j["edge"][0][0]][j["edge"][1][0]] = 0 #since we're already using this edge, consider it distance 0 for the next join
+                elif j["dir"] == -1:
+                    distances[j["edge"][1][0]][j["edge"][0][0]] = 0
+                else:
+                    raise
+    query = f"SELECT * FROM {start}"
+    for join in all_joins:
+        if join["dir"] == 1:
+            query += f" JOIN {join['edge'][1][0]} ON {join['edge'][0][0]}.{join['edge'][0][1]} = {join['edge'][1][0]}.{join['edge'][1][1]}"
+        elif join["dir"] == -1:
+            query += f" JOIN {join['edge'][0][0]} ON {join['edge'][1][0]}.{join['edge'][1][1]} = {join['edge'][0][0]}.{join['edge'][0][1]}"
+        else:
+            raise
+    return query
+
+def dijkstra(nodes, distances, start):
+    #dijkstra's implementation from here: https://stackoverflow.com/a/22899400
+    unvisited = {node: float("inf") for node in nodes} #using None as +inf
+    visited = {}
+    current = start
+    currentDistance = 0
+    unvisited[current] = currentDistance
+    backtrack = {}
+
+    while True:
+        for neighbour, distance in distances.get(current,{}).items():
+            if neighbour not in unvisited: continue
+            newDistance = currentDistance + distance
+            if unvisited[neighbour] is None or unvisited[neighbour] > newDistance:
+                unvisited[neighbour] = newDistance
+                backtrack[neighbour] = current
+        visited[current] = currentDistance
+        del unvisited[current]
+        if not unvisited: break
+        candidates = [node for node in unvisited.items()]
+        current, currentDistance = sorted(candidates, key = lambda x: x[1])[0]
+    return backtrack
 
 def downstream_query(tables, select_clause=None, show_all=False):
-    fields = get_fields()
+    table_to_columns = get_table_to_columns(show_all)
 
     graph = foreign_key_graph()
     foreign_key_columns = set(x[0] for x in graph) #foreign_key_columns = {("table1","col1")}
-
-
-    table_to_columns = {}
-    for table, column, is_nullable, data_type, column_key in fields[["TABLE_NAME","COLUMN_NAME","IS_NULLABLE","DATA_TYPE","COLUMN_KEY"]].values:
-        table_to_columns.setdefault(table,[])
-        if show_all: #view all columns
-            table_to_columns[table].append(column)
-            continue
-        if is_nullable == "YES": continue #skip nullable columns
-        if (table,column) in foreign_key_columns: continue #skip foreign keys
-        #print id columns that aren't foreign keys
-        if column_key in ["PRI","MUL"]:
-            table_to_columns[table].append(column)
-        if data_type not in ["enum","varchar"]: continue
-        table_to_columns[table].append(column)
 
     todo_up = set()
     # todo_up.add("linked_issuing_entities")
@@ -428,7 +506,8 @@ def readCL(args):
     parser.add_argument("--cascade_select_query",nargs="*",help="print query to start from one table and join all tables referred to by foreign keys")
     parser.add_argument("--merge_dups",nargs=2,help="db --merge_dups users first_name,last_name")
     parser.add_argument("--merge",nargs=3,help="merge all dependencies on one row from a table to point to another row from that table. example to switch everything pointing to user 210 -> user 217: db --merge users 'users.id = 210' 'users.id = 217'")
-    parser.add_argument("-j","--join",help="automatically make the most logical join to the argument table based on foreign keys")
+    parser.add_argument("-j","--join",nargs="*",help="automatically make the most logical join to the argument table based on foreign keys")
+    parser.add_argument("-r","--rev",action="store_true",help="allow reverse joins when using the --join flag")
     parser.add_argument("-s","--select",help="override the default select statement in, eg cascade_select")
     parser.add_argument("positional",nargs="*")
     if args:
@@ -437,7 +516,7 @@ def readCL(args):
         args, _ = parser.parse_known_args()
     if args.top:
         args.show_all = True
-    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select, args.cascade_select_all, args.cascade_select_query, args.merge_dups, args.merge, args.join, args.select
+    return args.index, args.describe, args.cat, args.head, args.tail, args.top, args.kill, args.profile, args.where, args.key, args.table, args.positional, args.tree, args.tree_rev, args.cascade_select, args.cascade_select_all, args.cascade_select_query, args.merge_dups, args.merge, args.join, args.rev, args.select
 
 def readCL_output():
     parser = argparse.ArgumentParser()
@@ -448,7 +527,7 @@ def readCL_output():
 
 
 def execute_query(args):
-    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select, cascade_select_all, cascade_select_query, merge_dups, merge, join, select = readCL(args)
+    index, describe, cat, head, tail, top, kill, profile, where, key, freq, pos, tree, tree_rev, cascade_select, cascade_select_all, cascade_select_query, merge_dups, merge, join, rev, select = readCL(args)
     if any([index, describe, cat, head, tail, where, key, freq]):
         lookup = lookup_table_abbreviation(pos[0])
         if lookup:
@@ -519,6 +598,13 @@ def execute_query(args):
             raise Exception('merge SELECT clause should return only a single row')
         r2 = r2.to_dict('records')[0]
         merge_fn(table, where1, r2)
+    elif join:
+        dest_tables = join
+        query = shortest_path(pos[0], dest_tables, rev)
+        if len(pos) > 1:
+            query += " " + pos[1]
+        print(query)
+        out = run(query)
     else:
         if profile:
             out = run_list(['SET profiling = 1;'] + pos + ["SHOW PROFILE"])
