@@ -12,7 +12,8 @@ setup(
     install_requires=['argparse',
                       'jtutils',
                       'python-csv',
-                      'python-service'
+                      'python-service',
+                      'mysqlclient'
     ],
     keywords = [],
     classifiers = [],

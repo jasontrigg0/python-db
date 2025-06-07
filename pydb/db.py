@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #profiling results:
 #total time = 0.35 - 0.4 (slower on the first run)
 #0.08 - 0.09 for SHOW TABLES to lookup abbreviations
